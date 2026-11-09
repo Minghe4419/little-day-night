@@ -1,0 +1,18 @@
+{
+  "id": "./",
+  "name": "早晚小冒险",
+  "short_name": "早晚小冒险",
+  "description": "晚间五分钟，早晨十分钟。抽一份属于自己的小快乐。",
+  "lang": "zh-CN",
+  "start_url": "./?launch=home",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f8f6eb",
+  "theme_color": "#f8f6eb",
+  "prefer_related_applications": false,
+  "icons": [
+    {"src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ]
+}
