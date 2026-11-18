@@ -9,7 +9,7 @@
  navigator.serviceWorker.addEventListener('controllerchange',()=>{if(reloading)location.reload();else show();});
  navigator.serviceWorker.addEventListener('message',e=>{if(e.data==='CLOSE_OTHER_PAGES'){reloading=false;status.textContent='请先关闭其他早晚小冒险页面，再更新。';button.disabled=false;}});
  button.addEventListener('click',()=>{
-  if((typeof photoBusy!=='undefined'&&photoBusy)||(typeof restoreBusy!=='undefined'&&restoreBusy)||(typeof pendingWrite!=='undefined'&&pendingWrite)||(typeof flowBusy!=='undefined'&&flowBusy)){status.textContent='请先保存或下载本页进度备份，等当前操作结束后再更新。';return;}
+  if((typeof backupBusy!=='undefined'&&backupBusy)||(typeof photoBusy!=='undefined'&&photoBusy)||(typeof restoreBusy!=='undefined'&&restoreBusy)||(typeof pendingWrite!=='undefined'&&pendingWrite)||(typeof flowBusy!=='undefined'&&flowBusy)){status.textContent='请先保存或下载本页进度备份，等当前操作结束后再更新。';return;}
   if(!reg?.waiting)return;
   if(!confirm('现在更新并重新打开？已保存的进度会保留。'))return;
   reloading=true;button.disabled=true;reg.waiting.postMessage('ACTIVATE');

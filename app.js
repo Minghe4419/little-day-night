@@ -134,7 +134,7 @@ function ticket(p){
 }
 function drawPage(){
   ensureDaily();
-  return `<section class="daily-picker"><h1>今天，留一点小快乐。</h1><p class="pager-hint">左右滑动切换早晚 · 卡片不会跨日自动更换</p><button type="button" class="batch-draw" data-pair="1">${icon('cards')}抽取新一组</button><div class="day-pager" id="day-pager" tabindex="0" role="group" aria-label="早上与晚上两个页面，可左右滚动">${['morning','evening'].map(p=>`<section class="day-panel ${p}" data-day-panel="${p}" aria-label="${p==='morning'?'早上':'晚上'}"><div class="day-heading"><span class="period-art">${icon(p==='morning'?'sun':'moon')}</span><div><h2>${p==='morning'?'早上':'晚上'}</h2><p>${p==='morning'?'醒来，发现一点新鲜。':'睡前，轻轻收个尾。'}</p></div></div>${ticket(p)}</section>`).join('')}</div><div class="pager-dots" aria-hidden="true"><i data-dot="morning"></i><i data-dot="evening"></i></div></section>`;
+  return `<section class="daily-picker"><h1>今天，留一点小快乐。</h1><p class="pager-hint">左右滑动切换早晚 · 卡片不会跨日自动更换</p><div class="draw-toolbar"><button type="button" class="batch-draw" data-pair="1">${icon('cards')}抽取新一组</button><button type="button" class="print-daily" data-print-daily="1">${icon('book')}打印日报</button></div><div class="day-pager" id="day-pager" tabindex="0" role="group" aria-label="早上与晚上两个页面，可左右滚动">${['morning','evening'].map(p=>`<section class="day-panel ${p}" data-day-panel="${p}" aria-label="${p==='morning'?'早上':'晚上'}"><div class="day-heading"><span class="period-art">${icon(p==='morning'?'sun':'moon')}</span><div><h2>${p==='morning'?'早上':'晚上'}</h2><p>${p==='morning'?'醒来，发现一点新鲜。':'睡前，轻轻收个尾。'}</p></div></div>${ticket(p)}</section>`).join('')}</div><div class="pager-dots" aria-hidden="true"><i data-dot="morning"></i><i data-dot="evening"></i></div></section>`;
 }
 function libraryPage(){
   const cats=libraryPeriod==='all'?[...new Set(Object.values(CATEGORIES).flat())]:CATEGORIES[libraryPeriod];
@@ -185,6 +185,7 @@ function complete(p){
   render({focus:'#receipt-'+p,reveal:true});if(credited(slot.uid))celebrateCompletion(p);say(credited(slot.uid)?'＋1 份成长。'+petReward(total())+'。可选拍照留念，也可以跳过。':'又完成一次小冒险，已留下记录；当日该时段成长已领取。');
 }
 function undoComplete(p){
+  if(restoreBusy){say('正在恢复备份，请稍候。',true);return;}
   read();const slot=today()[p];if(!slot?.completedAt)return;
   state.activePeriod=p;slot.completedAt=null;save();render({focus:`[data-complete="${p}"]`,reveal:true});
   say('已恢复为未完成，累计成长也已同步。');
@@ -250,6 +251,7 @@ function mountPager(){
   pager.addEventListener('scroll',()=>{cancelAnimationFrame(raf);raf=requestAnimationFrame(sync);},{passive:true});
 }
 async function redraw(p,direction=-1){
+  if(restoreBusy){say('正在恢复备份，请稍候。',true);return;}
   if(flowBusy)return;read();if(today()[p]?.completedAt)return;
   state.activePeriod=p;const expected=today()[p]?.id,el=$('card-'+p);flowBusy=true;
   try{
