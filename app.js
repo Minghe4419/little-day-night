@@ -18,7 +18,7 @@ const suggestedPeriod=()=>{const h=Number(new Intl.DateTimeFormat('en-GB',{timeZ
 const initial=()=>({schema:STORAGE,mode:'pet',petName:'豆豆',petType:'dog',motion:true,activePeriod:suggestedPeriod(),flow:null,filters:{evening:'random',morning:'random'},days:{}});
 let state=initial(),storageAvailable=true,page=['draw','library','rewards'].includes(location.hash.slice(1))?location.hash.slice(1):'draw',libraryPeriod='all',libraryCategory='all',libraryCategoriesOpen=false,celebrate=false;
 let pendingWrite=false,damagedRaw=null,originalExported=false;
-function validate(raw){
+function validateLegacy(raw){
   if(!raw||raw.schema!==STORAGE||!raw.days||typeof raw.days!=='object'||Array.isArray(raw.days))throw Error('这不是有效的网站进度备份，或版本暂不支持');
   const clean=initial();
   if(Object.hasOwn(MODES,raw.mode))clean.mode=raw.mode;
@@ -43,6 +43,31 @@ function validate(raw){
   }
   clean.flow=validateFlow(raw.flow);return clean;
 }
+const SCHEMA2='little-day-night/v2';
+function taskId(){return crypto.randomUUID?crypto.randomUUID():'t-'+Date.now()+'-'+Math.random().toString(36).slice(2);}
+function dayOf(t){return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(t));}
+function validate(raw){
+ if(!raw||![STORAGE,SCHEMA2].includes(raw.schema))throw Error('备份版本不受支持');
+ const clean=validateLegacy({...raw,schema:STORAGE});clean.schema=SCHEMA2;clean.tasks=[];clean.current={};
+ const validTask=(t)=>{
+  if(!t||typeof t.uid!=='string'||!/^[a-zA-Z0-9-]{1,100}$/.test(t.uid)||!['morning','evening'].includes(t.period)||!['active','skipped'].includes(t.status))throw Error('任务记录无效');
+  const snap=historyActivity(t.snapshot,t.id,t.period);if(!snap)throw Error('任务快照无效');
+  if(t.completedAt!=null&&(!Number.isFinite(t.completedAt)||t.completedAt<=0||t.completedAt>8640000000000000))throw Error('完成时间无效');
+  if(t.legacyDay!=null&&!validDate(t.legacyDay))throw Error('奖励日期无效');
+  return {uid:t.uid,id:t.id,period:t.period,status:t.status,completedAt:t.completedAt??null,snapshot:snap,...(t.legacyDay?{legacyDay:t.legacyDay}:{})};
+ };
+ if(raw.schema===SCHEMA2){
+  if(!Array.isArray(raw.tasks)||raw.tasks.length>50000)throw Error('任务数量无效');
+  if(raw.photoSet!=null&&(typeof raw.photoSet!=='string'||!/^[a-zA-Z0-9-]{1,100}$/.test(raw.photoSet)))throw Error('照片分组无效');if(raw.photoSet)clean.photoSet=raw.photoSet;clean.tasks=raw.tasks.map(validTask);if(new Set(clean.tasks.map(t=>t.uid)).size!==clean.tasks.length)throw Error('任务编号重复');
+  for(const period of ['morning','evening']){const uid=raw.current?.[period];if(uid!=null){if(!clean.tasks.some(t=>t.uid===uid&&t.period===period&&t.status==='active'))throw Error('当前卡片无效');clean.current[period]=uid;}}
+ }else{
+  for(const date of Object.keys(clean.days).sort())for(const period of ['morning','evening']){const t=clean.days[date][period];if(t){const item={...t,uid:'legacy-'+date+'-'+period,period,status:'active',legacyDay:date};clean.tasks.push(item);clean.current[period]=item.uid;}}
+ }
+ return clean;
+}
+function ensureLedger(){if(!state.tasks){state=validate(state);}}
+function rewardIds(){ensureLedger();const seen=new Set(),ids=new Set();for(const t of [...state.tasks].filter(t=>t.completedAt).sort((a,b)=>a.completedAt-b.completedAt)){const key=(t.legacyDay||dayOf(t.completedAt))+'/'+t.period;if(!seen.has(key)){seen.add(key);ids.add(t.uid);}}return ids;}
+function credited(uid){return rewardIds().has(uid);}
 function read(){
   if(pendingWrite||damagedRaw!==null)return false;
   let raw=null;
@@ -52,7 +77,7 @@ function read(){
 read();
 function save({replaceDamaged=false}={}){
   if(damagedRaw!==null&&!replaceDamaged){storageAvailable=false;pendingWrite=true;storageStatus();return false;}
-  try{localStorage.setItem(STORAGE,JSON.stringify(state));storageAvailable=true;pendingWrite=false;damagedRaw=null;originalExported=false;}
+  try{ensureLedger();if(localStorage.getItem(STORAGE)&&!localStorage.getItem('little-day-night/pre-v2')){localStorage.setItem('little-day-night/pre-v2',localStorage.getItem(STORAGE));}localStorage.setItem(STORAGE,JSON.stringify(state));storageAvailable=true;pendingWrite=false;damagedRaw=null;originalExported=false;}
   catch{storageAvailable=false;pendingWrite=true;}
   storageStatus();return storageAvailable;
 }
@@ -61,11 +86,13 @@ function storageStatus(){
   const panel=$('storage-recovery');if(panel)panel.hidden=damagedRaw===null;
   const warning=$('storage-warning');if(warning)warning.hidden=storageAvailable||damagedRaw!==null;
 }
-function today(){const date=nowDay();if(!state.days[date])state.days[date]={};return state.days[date];}
-function completions(){return Object.entries(state.days).flatMap(([date,day])=>['evening','morning'].filter(p=>day[p]?.completedAt).map(period=>({date,period,...day[period]}))).sort((a,b)=>b.completedAt-a.completedAt);}
-function total(){return completions().length;}
+function today(){ensureLedger();return Object.fromEntries(['morning','evening'].map(p=>[p,state.tasks.find(t=>t.uid===state.current[p])]));}
+function completions(){ensureLedger();return state.tasks.filter(t=>t.completedAt).map(t=>({...t,date:dayOf(t.completedAt)})).sort((a,b)=>b.completedAt-a.completedAt);}
+function total(){return rewardIds().size;}
 function choose(period,oldId){const pool=ACTS.filter(a=>a.period===period&&a.id!==oldId);return pool[Math.floor(Math.random()*pool.length)];}
-function draw(period){const d=today();if(d[period]?.completedAt)return false;const a=choose(period,d[period]?.id);d[period]={id:a.id,startedAt:null,completedAt:null,snapshot:snapshotOf(a)};return true;}
+function replaceTask(period,a){ensureLedger();const old=today()[period];if(old&&!old.completedAt)old.status='skipped';const t={uid:taskId(),id:a.id,period,status:'active',completedAt:null,snapshot:snapshotOf(a)};state.tasks.push(t);state.current[period]=t.uid;}
+function draw(period){const old=today()[period];if(old?.completedAt)return false;replaceTask(period,choose(period,old?.id));return true;}
+function drawPair(){if(flowBusy||restoreBusy)return;read();ensureDaily();const pending=['morning','evening'].filter(p=>!today()[p].completedAt).map(p=>p==='morning'?'早上':'晚上');if(pending.length&&!confirm(pending.join('和')+'冒险未完成，仍要抽取新的早晚两张卡片吗？'))return;for(const p of ['morning','evening'])replaceTask(p,choose(p,today()[p]?.id));save();render({draw:['morning','evening']});say('新的一组已抽好，卡片会一直保留到你主动更换。');}
 function say(text,error=false){$('message').textContent=text;$('message').classList.toggle('error',error);}
 function promptBlock(a){
   return a.prompt?`<details class="ai-prompt"><summary>展开 AI 提示词</summary><label class="visually-hidden" for="prompt-${a.id}">可复制的活动提示词</label><textarea id="prompt-${a.id}" readonly>${escapeHTML(a.prompt)}</textarea><button type="button" class="small" data-copy="${a.id}">复制提示词</button><p class="ai-note">需自行打开 AI 工具执行。本网站不调用 AI；最多修改一次，拿到小成品就收尾。</p></details>`:'';
@@ -100,24 +127,14 @@ function icon(name){
 const CATEGORY_ICONS={'纸笔放空':'pencil','感官放松':'cup','小狗陪伴':'paw','安静发现':'leaf','轻手作':'thread','温柔收尾':'heart','附近探索':'compass','纸笔创作':'brush','感官唤醒':'drop','小狗互动':'paw','小小焕新':'wand','AI 小创作':'robot'};
 function categoryBadge(category){return `<span class="category-badge" data-category="${escapeHTML(category)}"><span class="category-symbol">${icon(CATEGORY_ICONS[category])}</span>${escapeHTML(category)}</span>`;}
 function formatMinute(stamp){return new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(stamp));}
-function ensureDaily(){
-  if(!['morning','evening'].includes(state.activePeriod))state.activePeriod=suggestedPeriod();
-  let changed=false;
-  for(const p of ['morning','evening'])if(!today()[p]){
-    const draft=state.flow?.date===nowDay()?catalogLookup(state.flow.drafts?.[p]):null;
-    if(draft?.period===p)today()[p]={id:draft.id,startedAt:null,completedAt:null,snapshot:snapshotOf(draft)};
-    else draw(p);
-    changed=true;
-  }
-  if(changed)save();
-}
+function ensureDaily(){ensureLedger();if(!['morning','evening'].includes(state.activePeriod))state.activePeriod=suggestedPeriod();let changed=false;for(const p of ['morning','evening'])if(!today()[p]){draw(p);changed=true;}if(changed)save();}
 function ticket(p){
   const slot=today()[p],a=slot.snapshot||lookup(slot.id),done=!!slot.completedAt;
-  return `<article class="ticket ${p} ${done?'is-done':''} ${celebrate&&done&&p===state.activePeriod?'just-completed':''}" data-period="${p}" data-card-period="${p}" id="card-${p}" tabindex="0" aria-label="${escapeHTML(a.title)}${done?'，已完成':'，左右滑动切换早晚'}"><div class="ticket-body"><div class="card-meta">${categoryBadge(a.category)}<span class="minute-pill">${a.minutes} 分钟</span></div><div class="drawn"><h3 id="activity-${p}" tabindex="-1">${escapeHTML(a.title)}</h3><p class="steps">${escapeHTML(a.steps)}</p><p class="feedback">${icon('spark')}<span>${escapeHTML(a.feedback)}</span></p><p class="materials">准备：${escapeHTML(a.materials)}</p>${!done?promptBlock(a):''}</div>${done?`<div class="completion-seal" id="receipt-${p}" tabindex="-1">${icon('check')}<strong>这件小事，做到了。</strong><span>＋1 份成长</span></div><div class="ticket-actions done-actions"><button type="button" class="quiet" data-undo="${p}">${icon('undo')}还未完成</button></div>`:`<div class="ticket-actions"><button type="button" class="complete" data-complete="${p}">${icon('check')}做完了</button><button type="button" class="swap-card" data-draw="${p}">${icon('shuffle')}换一张</button></div>`}</div></article>`;
+  return `<article class="ticket ${p} ${done?'is-done':''} ${celebrate&&done&&p===state.activePeriod?'just-completed':''}" data-period="${p}" data-card-period="${p}" id="card-${p}" tabindex="0" aria-label="${escapeHTML(a.title)}${done?'，已完成':'，左右滑动切换早晚'}"><div class="ticket-body"><div class="card-meta">${categoryBadge(a.category)}<span class="minute-pill">${a.minutes} 分钟</span></div><div class="drawn"><h3 id="activity-${p}" tabindex="-1">${escapeHTML(a.title)}</h3><p class="steps">${escapeHTML(a.steps)}</p><p class="feedback">${icon('spark')}<span>${escapeHTML(a.feedback)}</span></p><p class="materials">准备：${escapeHTML(a.materials)}</p>${!done?promptBlock(a):''}</div>${done?`<div class="completion-seal" id="receipt-${p}" tabindex="-1">${icon('check')}<strong>这件小事，做到了。</strong><span>${credited(slot.uid)?'＋1 份成长':'已留下记录 · 当日该时段成长已领取'}</span></div><div class="memory-inline">${photoControls(slot.uid)}<div class="memory-photo" data-photo-view="${escapeHTML(slot.uid)}"></div></div><div class="ticket-actions done-actions"><button type="button" class="quiet" data-undo="${p}">${icon('undo')}还未完成</button></div>`:`<div class="ticket-actions"><button type="button" class="complete" data-complete="${p}">${icon('check')}做完了</button><button type="button" class="swap-card" data-draw="${p}">${icon('shuffle')}换一张</button></div>`}</div></article>`;
 }
 function drawPage(){
   ensureDaily();
-  return `<section class="daily-picker"><h1>今天，留一点小快乐。</h1><p class="pager-hint">左右滑动，切换早晚</p><div class="day-pager" id="day-pager" tabindex="0" role="group" aria-label="早上与晚上两个页面，可左右滚动">${['morning','evening'].map(p=>`<section class="day-panel ${p}" data-day-panel="${p}" aria-label="${p==='morning'?'早上':'晚上'}"><div class="day-heading"><span class="period-art">${icon(p==='morning'?'sun':'moon')}</span><div><h2>${p==='morning'?'早上':'晚上'}</h2><p>${p==='morning'?'醒来，发现一点新鲜。':'睡前，轻轻收个尾。'}</p></div></div>${ticket(p)}</section>`).join('')}</div><div class="pager-dots" aria-hidden="true"><i data-dot="morning"></i><i data-dot="evening"></i></div></section>`;
+  return `<section class="daily-picker"><h1>今天，留一点小快乐。</h1><p class="pager-hint">左右滑动切换早晚 · 卡片不会跨日自动更换</p><button type="button" class="batch-draw" data-pair="1">${icon('cards')}抽取新一组</button><div class="day-pager" id="day-pager" tabindex="0" role="group" aria-label="早上与晚上两个页面，可左右滚动">${['morning','evening'].map(p=>`<section class="day-panel ${p}" data-day-panel="${p}" aria-label="${p==='morning'?'早上':'晚上'}"><div class="day-heading"><span class="period-art">${icon(p==='morning'?'sun':'moon')}</span><div><h2>${p==='morning'?'早上':'晚上'}</h2><p>${p==='morning'?'醒来，发现一点新鲜。':'睡前，轻轻收个尾。'}</p></div></div>${ticket(p)}</section>`).join('')}</div><div class="pager-dots" aria-hidden="true"><i data-dot="morning"></i><i data-dot="evening"></i></div></section>`;
 }
 function libraryPage(){
   const cats=libraryPeriod==='all'?[...new Set(Object.values(CATEGORIES).flat())]:CATEGORIES[libraryPeriod];
@@ -128,14 +145,11 @@ function libraryPage(){
 function petPanel(){
   const n=total(),type=state.petType,{i,current,next,from,to,stars,gift}=petStage(n);
   const value=n-from,max=to-from;
-  return `<section class="pet-home" aria-labelledby="pet-home-title"><div class="pet-home-heading"><h1 id="pet-home-title">一起，长大一点点。</h1><p>每完成一件小事，伙伴就多一份成长。</p></div><div class="pet-choices" role="group" aria-label="选择宠物类型">${Object.entries(PET_TYPES).map(([key,pet])=>`<button type="button" data-pet="${key}" aria-pressed="${type===key}"><span class="pet-choice-art" aria-hidden="true">${petArt(key,n)}</span>${pet.short}</button>`).join('')}</div><div class="pet-scene" data-current-pet="${type}">${petArt(type,n)}</div><div class="pet-caption"><h2>${PET_TYPES[type].title} · ${current.title}</h2><p>累计 ${n} 份成长${stars?` · ${stars} 颗陪伴星`:''}</p></div><progress class="pet-meter" value="${value}" max="${max}" aria-label="${gift}成长进度"></progress><p class="pet-next">${gift}<br>这一程 ${value} / ${max}，再完成 ${to-n} 次活动。</p><p class="pet-rules">6 次长成青年，20 次长成成年。<br>成年后每 10 次获得一颗陪伴星，三位伙伴共享成长。</p></section>`;
+  return `<section class="pet-home" aria-labelledby="pet-home-title"><div class="pet-home-heading"><h1 id="pet-home-title">一起，长大一点点。</h1><p>每天首次完成早、晚冒险，各获得一份成长。</p></div><div class="pet-choices" role="group" aria-label="选择宠物类型">${Object.entries(PET_TYPES).map(([key,pet])=>`<button type="button" data-pet="${key}" aria-pressed="${type===key}"><span class="pet-choice-art" aria-hidden="true">${petArt(key,n)}</span>${pet.short}</button>`).join('')}</div><div class="pet-scene" data-current-pet="${type}">${petArt(type,n)}</div><div class="pet-caption"><h2>${PET_TYPES[type].title} · ${current.title}</h2><p>累计 ${n} 份成长${stars?` · ${stars} 颗陪伴星`:''}</p></div><progress class="pet-meter" value="${value}" max="${max}" aria-label="${gift}成长进度"></progress><p class="pet-next">${gift}<br>这一程 ${value} / ${max}，再完成 ${to-n} 次活动。</p><p class="pet-rules">6 次长成青年，20 次长成成年。<br>成年后每 10 次获得一颗陪伴星，三位伙伴共享成长。</p></section>`;
 }
 function mountLibrary(){const drawer=document.querySelector('.category-drawer');if(drawer)drawer.addEventListener('toggle',()=>{libraryCategoriesOpen=drawer.open;});}
 
-function rewardsPage(){
-  const records=completions();
-  return `${petPanel()}<section class="history"><h2 class="history-title">最近的小冒险</h2>${records.length?records.slice(0,50).map(r=>{const a=r.snapshot||lookup(r.id);return `<article class="history-row"><div class="history-symbol">${icon(r.period==='morning'?'sun':'moon')}</div><div class="history-copy"><h2>${escapeHTML(a.title)}</h2>${categoryBadge(a.category)}<time datetime="${new Date(r.completedAt).toISOString()}">${formatMinute(r.completedAt)}</time></div><span class="history-credit">${icon('spark')}＋1</span></article>`;}).join(''):`<div class="empty-history">${icon('book')}<p>做过的小事，会在这里留下。</p></div>`}</section>`;
-}
+function rewardsPage(){const records=completions();return `${petPanel()}${reportPanel()}<section class="history"><h2 class="history-title">最近的小冒险</h2>${records.length?records.slice(0,historyLimit).map(r=>`<details class="memory-record" data-memory="${escapeHTML(r.uid)}"><summary><span>${escapeHTML(r.snapshot.title)}<time>${formatMinute(r.completedAt)}</time></span><span>${credited(r.uid)?'＋1 成长':'已记录'}</span></summary><div class="memory-body">${categoryBadge(r.snapshot.category)}${photoControls(r.uid)}<div class="memory-photo" data-photo-view="${escapeHTML(r.uid)}"></div><button type="button" class="quiet" data-undo-record="${escapeHTML(r.uid)}">${icon('undo')}撤销这次完成</button></div></details>`).join(''):'<p>做过的小事，会在这里留下。</p>'}${records.length>historyLimit?'<button type="button" data-more-history="1">查看更多冒险</button>':''}</section>`;}
 function focusKey(element){
   if(!element||element===document.body)return null;
   if(element.id)return '#'+CSS.escape(element.id);
@@ -152,7 +166,7 @@ function render(options={}){
   today();document.documentElement.dataset.motion=motionEnabled()?'on':'off';
   document.querySelectorAll('[data-page]').forEach(a=>a.setAttribute('aria-current',a.dataset.page===page?'page':'false'));
   $('view').innerHTML=page==='library'?libraryPage():page==='rewards'?rewardsPage():drawPage();
-  $('motion-toggle').checked=state.motion;storageStatus();mountPager();mountLibrary();syncMenu();
+  $('motion-toggle').checked=state.motion;storageStatus();mountPager();mountLibrary();syncMenu();mountMemories();
   if(focus){const target=document.querySelector(focus);target?.focus({preventScroll:true});if(target?.matches('h1,h2,h3')){target.tabIndex=-1;target.focus({preventScroll:true});}if(options.reveal)target?.scrollIntoView({block:'nearest',behavior:'instant'});}
   if(options.draw)drawMotion(options.draw);
   if(!storageAvailable)say(damagedRaw!==null?'原记录暂时无法读取，已保留。请先下载原始记录，再恢复有效备份。':'浏览器暂时无法保存。本页进度仍在，离开前请下载进度备份。',true);
@@ -164,10 +178,11 @@ function go(p){
   const heading=$('view').querySelector('h1');heading.tabIndex=-1;heading.focus({preventScroll:true});window.scrollTo({top:0,behavior:'instant'});
 }
 function complete(p){
+  if(restoreBusy)return;
   if(flowBusy)return;read();const slot=today()[p];if(!slot){say('先抽一张活动签，再开始吧。');return;}
   if(slot.completedAt){say('这份成长已经领取过啦。');return;}
-  state.activePeriod=p;slot.snapshot=slot.snapshot||snapshotOf(lookup(slot.id));slot.completedAt=Date.now();save();celebrate=true;
-  render({focus:'#receipt-'+p,reveal:true});celebrateCompletion(p);say('＋1 份成长。'+petReward(total())+'。');
+  state.activePeriod=p;slot.snapshot=slot.snapshot||snapshotOf(lookup(slot.id));slot.completedAt=Date.now();delete slot.legacyDay;save();celebrate=true;
+  render({focus:'#receipt-'+p,reveal:true});if(credited(slot.uid))celebrateCompletion(p);say(credited(slot.uid)?'＋1 份成长。'+petReward(total())+'。可选拍照留念，也可以跳过。':'又完成一次小冒险，已留下记录；当日该时段成长已领取。');
 }
 function undoComplete(p){
   read();const slot=today()[p];if(!slot?.completedAt)return;
@@ -175,32 +190,33 @@ function undoComplete(p){
   say('已恢复为未完成，累计成长也已同步。');
 }
 function download(text,name,type){const url=URL.createObjectURL(new Blob([text],{type})),a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);}
-function exportLog(){const rows=completions().map(r=>{const a=r.snapshot||lookup(r.id);return `## ${r.date} ${r.period==='evening'?'晚间':'早晨'}\n\n活动：${a.title}\n类别：${a.category}\n做法：${a.steps}\n确认完成时间：${formatMinute(r.completedAt)}\n奖励：1 份成长\n`;});download(`# 早晚小冒险记录\n\n累计完成：${total()} 次\n说明：完成情况由用户自行确认，不代表睡眠效果。\n\n${rows.join('\n')||'暂无完成记录。'}`,`早晚小冒险记录_${nowDay()}.md`,'text/markdown;charset=utf-8');}
+function exportLog(){const rows=completions().map(r=>{const a=r.snapshot||lookup(r.id);return `## ${r.date} ${r.period==='evening'?'晚间':'早晨'}\n\n活动：${a.title}\n类别：${a.category}\n做法：${a.steps}\n确认完成时间：${formatMinute(r.completedAt)}\n奖励：${credited(r.uid)?1:0} 份成长\n`;});download(`# 早晚小冒险记录\n\n累计完成：${total()} 次\n说明：完成情况由用户自行确认，不代表睡眠效果。\n\n${rows.join('\n')||'暂无完成记录。'}`,`早晚小冒险记录_${nowDay()}.md`,'text/markdown;charset=utf-8');}
 document.addEventListener('click',async event=>{
   const link=event.target.closest('a[data-page],a.brand');if(link&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey&&!event.altKey){event.preventDefault();go(link.dataset.page||'draw');return;}
   const b=event.target.closest('button');if(!b||b.disabled)return;const d=b.dataset;
+  if(d.pair){drawPair();return;}
   if(d.draw){redraw(d.draw);return;}
   if(d.pet&&Object.hasOwn(PET_TYPES,d.pet)){state.petType=d.pet;save();render({focus:`[data-pet="${d.pet}"]`});say('伙伴换好啦，成长和已获得的配饰都还在。');return;}
   if(d.complete)complete(d.complete);
   if(d.undo)undoComplete(d.undo);
   if(d.go)go(d.go);
-  if(d.use){const a=lookup(d.use);if(!a||today()[a.period]?.completedAt)return;if(today()[a.period]?.startedAt&&!confirm('是否用这个活动替换正在进行的活动？'))return;today()[a.period]={id:a.id,startedAt:null,completedAt:null,snapshot:snapshotOf(a)};ensureFlow().step='result';state.activePeriod=a.period;state.filters[a.period]=a.category;save();go('draw');drawMotion([a.period]);say('活动已放进今日的签。');}
+  if(d.use){const a=lookup(d.use);if(!a||today()[a.period]?.completedAt)return;if(today()[a.period]?.startedAt&&!confirm('是否用这个活动替换正在进行的活动？'))return;replaceTask(a.period,a);ensureFlow().step='result';state.activePeriod=a.period;state.filters[a.period]=a.category;save();go('draw');drawMotion([a.period]);say('活动已放进今日的签。');}
   if(d.copy){const a=lookup(d.copy);try{await navigator.clipboard.writeText(a.prompt);say('提示词已复制，拿到一个成品就收尾。');b.textContent='已复制';}catch{document.querySelector(`#prompt-${a.id}`)?.select();say('提示词已选中，请手动复制。');}}
   if(d.action==='backup-original'&&damagedRaw!==null){download(damagedRaw,'早晚小冒险-原始记录.json','application/json;charset=utf-8');originalExported=true;say('原始记录已发起下载。请确认文件已保存，再决定是否重新开始。');}
   if(d.action==='reset-damaged'&&damagedRaw!==null){if(!originalExported){say('请先下载并保存原始记录，再重新开始。',true);return;}if(!confirm('请确认原始记录已保存。重新开始会替换当前浏览器里的原记录，是否继续？'))return;state=initial();save({replaceDamaged:true});render();if(storageAvailable)say('已重新开始，原始记录可从下载的文件保留。');}
-  if(d.action==='export')download(JSON.stringify(state,null,2),`早晚小冒险备份_${nowDay()}.json`,'application/json;charset=utf-8');
+  if(d.action==='export')exportFullBackup();
   if(d.action==='export-log')exportLog();
 });
 document.addEventListener('change',event=>{
   const target=event.target,p=target.dataset.filter;
   if(target.id==='motion-toggle'){state.motion=target.checked;save();document.documentElement.dataset.motion=motionEnabled()?'on':'off';if(!motionEnabled())document.getAnimations().forEach(a=>a.cancel());say(state.motion?'动效已开启；系统减少动态效果设置仍然优先。':'动效已关闭，功能和成长照常保留。');}
 });
-$('import').addEventListener('change',async event=>{const f=event.target.files[0];if(!f)return;try{if(f.size>2000000)throw Error('文件超过 2MB');const restored=validate(JSON.parse(await f.text()));if(!confirm('恢复将替换当前浏览器的全部进度，建议先下载当前备份。继续恢复吗？'))return;state=restored;const saved=save({replaceDamaged:true});render();say(saved?'备份已恢复。':'备份已载入本页，但浏览器未能保存。请下载进度备份后再离开。',!saved);}catch(error){say('恢复失败：'+error.message+'。当前进度没有改变。',true);}finally{event.target.value='';}});
+$('import').addEventListener('change',restoreFullBackup);
 function readRoute(){const p=location.hash.slice(1);if(['draw','library','rewards'].includes(p)&&p!==page){page=p;render();}}
 window.addEventListener('hashchange',readRoute);window.addEventListener('popstate',readRoute);
 window.addEventListener('storage',event=>{if(event.key===STORAGE){read();render();}});
 matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change',()=>{document.documentElement.dataset.motion=motionEnabled()?'on':'off';if(!motionEnabled())document.getAnimations().forEach(a=>a.cancel());});
-let shownDate=nowDay();window.addEventListener('focus',()=>{const date=nowDay();if(date!==shownDate){shownDate=date;state.activePeriod=suggestedPeriod();ensureFlow();render();say('新的一天到了，今天的两张签已准备好。');}});
+let shownDate=nowDay();window.addEventListener('focus',()=>{const date=nowDay();if(date!==shownDate){shownDate=date;state.activePeriod=suggestedPeriod();render();say('新的一天到了，原来的卡片已保留；早晚首次完成可各获一份成长。');}});
 
 function validateFlow(raw){
   if(!raw||typeof raw!=='object'||!validDate(raw.date)||!['intro','evening','morning','result'].includes(raw.step))return null;
