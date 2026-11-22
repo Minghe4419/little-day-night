@@ -3,3 +3,4 @@ html[data-period=evening]{--color-paper:#f1f4fc;--color-ink:#33394e;--color-mute
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
 /* Keep each task compact, including when the other period has a saved photo. */
 .day-pager{align-items:flex-start}.day-panel .ticket{flex:none;min-height:0}.day-panel .ticket-body{flex:none}.day-panel .drawn{flex:none}.day-panel .drawn h3,.day-panel .steps{min-height:0}.day-panel .ticket-actions{margin-top:16px}.companion-top p{margin:0}.daily-picker .day-heading{margin-bottom:12px}
+.day-pager{overflow-y:hidden}

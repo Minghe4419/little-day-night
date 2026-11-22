@@ -144,17 +144,20 @@ function syncMenu(){
   document.querySelectorAll('[data-icon]').forEach(el=>{el.innerHTML=icon(el.dataset.icon);});
   document.querySelector('.menu-title').textContent={draw:'抽签台',library:'活动图鉴',rewards:'奖励小屋',week:'冒险周报'}[page];
 }
+let pagerResize;
 function mountPager(){
+  pagerResize?.disconnect();
   const pager=$('day-pager');if(!pager)return;
   const index=state.activePeriod==='evening'?1:0;
   pager.scrollLeft=index*pager.clientWidth;
   const sync=()=>{
     if(!pager.isConnected)return;
     const p=pager.scrollLeft/pager.clientWidth>.5?'evening':'morning';
+    const panel=pager.querySelector('[data-day-panel='+p+']');if(panel)pager.style.height=panel.getBoundingClientRect().height+'px';
     document.querySelectorAll('[data-dot]').forEach(el=>el.classList.toggle('active',el.dataset.dot===p));
     if(state.activePeriod!==p){state.activePeriod=p;document.documentElement.dataset.period=p;save();}
   };
-  sync();let raf=0;
+  sync();pagerResize=new ResizeObserver(sync);pager.querySelectorAll('.day-panel').forEach(el=>pagerResize.observe(el));let raf=0;
   pager.addEventListener('scroll',()=>{cancelAnimationFrame(raf);raf=requestAnimationFrame(sync);},{passive:true});
 }
 async function redraw(p,direction=-1){
