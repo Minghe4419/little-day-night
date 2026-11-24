@@ -16,7 +16,7 @@ function historyActivity(value,id,period){
 }
 const suggestedPeriod=()=>{const h=Number(new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Shanghai',hour:'2-digit',hour12:false}).format(new Date()));return h>=16||h<4?'evening':'morning';};
 const initial=()=>({schema:STORAGE,mode:'pet',petName:'豆豆',petType:'dog',motion:true,activePeriod:suggestedPeriod(),flow:null,filters:{evening:'random',morning:'random'},days:{}});
-let state=initial(),storageAvailable=true,page=['draw','library','rewards','week'].includes(location.hash.slice(1))?location.hash.slice(1):'draw',libraryPeriod='all',libraryCategory='all',libraryCategoriesOpen=false,celebrate=false;
+let state=initial(),storageAvailable=true,page=['draw','library','rewards','week'].includes(location.hash.slice(1))?location.hash.slice(1):'draw',libraryPeriod='evening',libraryCategory='all',libraryCategoriesOpen=false,celebrate=false;
 let pendingWrite=false,damagedRaw=null,originalExported=false;
 function validateLegacy(raw){
   if(!raw||raw.schema!==STORAGE||!raw.days||typeof raw.days!=='object'||Array.isArray(raw.days))throw Error('这不是有效的网站进度备份，或版本暂不支持');
@@ -47,6 +47,7 @@ const SCHEMA2='little-day-night/v2';
 function taskId(){return crypto.randomUUID?crypto.randomUUID():'t-'+Date.now()+'-'+Math.random().toString(36).slice(2);}
 function dayOf(t){return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(t));}
 function validate(raw){
+ if(raw?.rewardPolicy!=null&&raw.rewardPolicy!=='night-v1')throw Error('奖励规则版本不受支持');
  if(!raw||![STORAGE,SCHEMA2].includes(raw.schema))throw Error('备份版本不受支持');
  const clean=validateLegacy({...raw,schema:STORAGE});clean.schema=SCHEMA2;clean.tasks=[];clean.current={};
  const validTask=(t)=>{
@@ -54,7 +55,7 @@ function validate(raw){
   const snap=historyActivity(t.snapshot,t.id,t.period);if(!snap)throw Error('任务快照无效');
   if(t.completedAt!=null&&(!Number.isFinite(t.completedAt)||t.completedAt<=0||t.completedAt>8640000000000000))throw Error('完成时间无效');
   if(t.legacyDay!=null&&!validDate(t.legacyDay))throw Error('奖励日期无效');
-  return {uid:t.uid,id:t.id,period:t.period,status:t.status,completedAt:t.completedAt??null,snapshot:snap,...(t.legacyDay?{legacyDay:t.legacyDay}:{})};
+  if(t.offeredNights!=null&&(!Array.isArray(t.offeredNights)||t.offeredNights.some(d=>!validDate(d))))throw Error('夜晚记录无效'); return {uid:t.uid,id:t.id,period:t.period,status:t.status,completedAt:t.completedAt??null,snapshot:snap,...(t.legacyDay?{legacyDay:t.legacyDay}:{}),offeredNights:t.offeredNights||[]};
  };
  if(raw.schema===SCHEMA2){
   if(!Array.isArray(raw.tasks)||raw.tasks.length>50000)throw Error('任务数量无效');
@@ -63,10 +64,12 @@ function validate(raw){
  }else{
   for(const date of Object.keys(clean.days).sort())for(const period of ['morning','evening']){const t=clean.days[date][period];if(t){const item={...t,uid:'legacy-'+date+'-'+period,period,status:'active',legacyDay:date};clean.tasks.push(item);clean.current[period]=item.uid;}}
  }
- return clean;
+ if(raw.rewardPolicy==='night-v1'){if(!Array.isArray(raw.legacyRewards)||raw.legacyRewards.some(id=>!clean.tasks.some(t=>t.uid===id)))throw Error('历史成长无效');clean.rewardPolicy='night-v1';clean.legacyRewards=[...new Set(raw.legacyRewards)];if(raw.legacyCompleted!=null&&(!Array.isArray(raw.legacyCompleted)||raw.legacyCompleted.some(id=>!clean.tasks.some(t=>t.uid===id))))throw Error('历史完成记录无效');clean.legacyCompleted=raw.legacyCompleted||clean.legacyRewards;}else{clean.rewardPolicy='night-v1';clean.legacyRewards=[...oldRewardIds(clean.tasks)];clean.legacyCompleted=clean.tasks.filter(t=>t.completedAt).map(t=>t.uid);} return clean;
 }
 function ensureLedger(){if(!state.tasks){state=validate(state);}}
-function rewardIds(){ensureLedger();const seen=new Set(),ids=new Set();for(const t of [...state.tasks].filter(t=>t.completedAt).sort((a,b)=>a.completedAt-b.completedAt)){const key=(t.legacyDay||dayOf(t.completedAt))+'/'+t.period;if(!seen.has(key)){seen.add(key);ids.add(t.uid);}}return ids;}
+function oldRewardIds(tasks){const seen=new Set(),ids=new Set();for(const t of [...tasks].filter(t=>t.completedAt).sort((a,b)=>a.completedAt-b.completedAt)){const key=(t.legacyDay||dayOf(t.completedAt))+'/'+t.period;if(!seen.has(key)){seen.add(key);ids.add(t.uid);}}return ids;}
+function nightOf(stamp=Date.now()){return dayOf(stamp-5*3600000);}
+function rewardIds(){ensureLedger();const ids=new Set(state.legacyRewards||[]),seen=new Set();for(const t of state.tasks.filter(t=>t.period==='evening'&&t.completedAt&&!(state.legacyCompleted||[]).includes(t.uid)).sort((a,b)=>a.completedAt-b.completedAt)){const key=nightOf(t.completedAt);if(!seen.has(key)){seen.add(key);if(!ids.has(t.uid)&&!(state.legacyRewards||[]).some(id=>{const old=state.tasks.find(v=>v.uid===id);return old?.period==='evening'&&old.completedAt&&nightOf(old.completedAt)===key;}))ids.add(t.uid);}}return ids;}
 function credited(uid){return rewardIds().has(uid);}
 function read(){
   if(pendingWrite||damagedRaw!==null)return false;
@@ -86,10 +89,11 @@ function storageStatus(){
   const warning=$('storage-warning');if(warning)warning.hidden=storageAvailable||damagedRaw!==null;
 }
 function today(){ensureLedger();return Object.fromEntries(['morning','evening'].map(p=>[p,state.tasks.find(t=>t.uid===state.current[p])]));}
-function completions(){ensureLedger();return state.tasks.filter(t=>t.completedAt).map(t=>({...t,date:dayOf(t.completedAt)})).sort((a,b)=>b.completedAt-a.completedAt);}
+function completions(){ensureLedger();return state.tasks.filter(t=>t.completedAt).map(t=>({...t,date:t.period==='evening'?nightOf(t.completedAt):dayOf(t.completedAt)})).sort((a,b)=>b.completedAt-a.completedAt);}
 function total(){return rewardIds().size;}
 function choose(period,oldId){const pool=ACTS.filter(a=>a.period===period&&a.id!==oldId);return pool[Math.floor(Math.random()*pool.length)];}
-function replaceTask(period,a){ensureLedger();const old=today()[period];if(old&&!old.completedAt)old.status='skipped';const t={uid:taskId(),id:a.id,period,status:'active',completedAt:null,snapshot:snapshotOf(a)};state.tasks.push(t);state.current[period]=t.uid;}
-function draw(period){const old=today()[period];if(old?.completedAt)return false;replaceTask(period,choose(period,old?.id));return true;}
-function drawPair(){if(flowBusy||restoreBusy)return;read();ensureDaily();const pending=['morning','evening'].filter(p=>!today()[p].completedAt).map(p=>p==='morning'?'早上':'晚上');if(pending.length&&!confirm(pending.join('和')+'冒险未完成，仍要抽取新的早晚两张卡片吗？'))return;for(const p of ['morning','evening'])replaceTask(p,choose(p,today()[p]?.id));save();render({draw:['morning','evening']});say('新的一组已抽好，卡片会一直保留到你主动更换。');}
+function replaceTask(period,a){if(period!=='evening')return;ensureLedger();const old=today()[period];if(old&&!old.completedAt)old.status='skipped';const t={uid:taskId(),id:a.id,period,status:'active',completedAt:null,offeredNights:[nightOf()],snapshot:snapshotOf(a)};state.tasks.push(t);state.current[period]=t.uid;}
+function draw(period){if(period!=='evening')return false;const old=today()[period];if(old?.completedAt)return false;replaceTask(period,choose(period,old?.id));return true;}
+function drawPair(){if(flowBusy||restoreBusy)return;read();ensureDaily();if(!today().evening.completedAt&&!confirm('今晚的冒险还未完成，仍要重新抽取吗？'))return;replaceTask('evening',choose('evening',today().evening?.id));state.activePeriod='evening';save();render({draw:['evening']});say('新的一张已抽好。选定后，就放下手机去做吧。');}
+function rememberTonight(){const t=today().evening;if(t&&!t.completedAt){const days=t.offeredNights||(t.offeredNights=[]);if(!days.includes(nightOf())){days.push(nightOf());save();}}}
 function say(text,error=false){$('message').textContent=text;$('message').classList.toggle('error',error);}
